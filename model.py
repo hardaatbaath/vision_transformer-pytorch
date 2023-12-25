@@ -43,17 +43,89 @@ def get_positional_embeddings(sequence_length, d):
 
     return result
 
-class MultiHeadSelfAttention
+class MultiHeadSelfAttention(nn.Module):
+
+    def __init__(self, d_model, n_heads: int = 2) -> None:
+        super().__init__()
+
+        self.d_model = d_model
+        self.n_heads = n_heads
+
+        assert d_model % n_heads == 0, f"Can't divide dimension {d_model} into {n_heads} heads"
+
+        d_head = int(d_model / n_heads)
+
+        self.q_mappings = nn.ModuleList([nn.Linear(d_head, d_head) for _ in range(self.n_heads)])
+        self.k_mappings = nn.ModuleList([nn.Linear(d_head, d_head) for _ in range(self.n_heads)])
+        self.v_mappings = nn.ModuleList([nn.Linear(d_head, d_head) for _ in range(self.n_heads)])
+        self.d_head = d_head
+
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, sequences):
+
+        # (N, seq_length, token_dim) -> (N, seq_length, n_heads, token_dim / n_heads) -> (N, seq_length, item_dim)  (through concatenation)
+        result = []
+
+        for sequence in sequences:
+            seq_result = []
+
+            for head in range(self.n_heads):
+
+                q_mapping = self.q_mappings[head]
+                k_mapping = self.k_mappings[head]
+                v_mapping = self.v_mappings[head]
+
+                seq = sequence[:, head * self.d_head: (head + 1) * self.d_head]
+                q, k, v = q_mapping(seq), k_mapping(seq), v_mapping(seq)
+
+                attention = self.softmax(q @ k.T / (self.d_head ** 0.5))
+                seq_result.append(attention @ v)
+
+            result.append(torch.hstack(seq_result))
+
+        return torch.cat([torch.unsqueeze(r, dim = 0) for r in result])
+
+
+class VisualTransformerBlock(nn.Module):
+
+    def __init__(self, hidden_d, n_heads, mlp_ratio=4):
+        super().__init__()
+        self.hidden_d = hidden_d
+        self.n_heads = n_heads
+
+        self.norm1 = nn.LayerNorm(hidden_d)
+        self.mhsa = MultiHeadSelfAttention(hidden_d, n_heads)
+        self.norm2 = nn.LayerNorm(hidden_d)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_d, mlp_ratio * hidden_d),
+            nn.GELU(),
+            nn.Linear(mlp_ratio * hidden_d, hidden_d)
+        )
+
+    def forward(self, x): 
+
+        out = x + self.mhsa(self.norm1(x))
+
+        out = out + self.mlp(self.norm2(out))
+
+        return out
+
 
 class VisualTransformer(nn.Module):
 
-    def __init__(self, chw = (1, 28, 28), n_patches: int = 7) -> None:
+    def __init__(self, chw, n_patches: int = 7, n_blocks: int = 2, hidden_d: int = 8, n_heads: int = 2, out_d: int = 10) -> None:
         # Super Constructor
         super().__init__()
 
         # Self Attributes:
         self.chw = chw # (Channel, Height, Width)
         self.n_patches = n_patches # Total number of patches
+        self.n_patches = n_patches
+        self.n_blocks = n_blocks
+        self.n_heads = n_heads
+        self.hidden_d = hidden_d
 
         # Check if the number of patches are perfectly divisible with the Width and Height        
         assert chw[1] % n_patches == 0, "Input shape not entirely divisible by number of patches"
@@ -69,22 +141,38 @@ class VisualTransformer(nn.Module):
         self.class_token = nn.Parameter(torch.rand(1, self.hidden_d))
 
         # 3) Positional embedding
-        self.pos_embed = nn.Parameter(torch.tensor(get_positional_embeddings(self.n_patches ** 2 + 1, self.hidden_d)))
-        self.pos_embed.requires_grad = False # To know that it is not a learning variable 
+        self.register_buffer('positional_embeddings', get_positional_embeddings(n_patches ** 2 + 1, hidden_d), persistent=False)
+        
+        # 4) Transformer encoder blocks
+        self.blocks = nn.ModuleList([VisualTransformerBlock(hidden_d, n_heads) for _ in range(n_blocks)])
 
+        # 5) Classification MLPk
+        self.mlp = nn.Sequential(
+            nn.Linear(self.hidden_d, out_d),
+            nn.Softmax(dim=-1)
+        )
 
     def forward(self, images):
         # Dividing into patches
-        patches = patchify(images, self.n_patches)
+        n, c, h, w = images.shape
+        patches = patchify(images, self.n_patches).to(self.positional_embeddings.device)
 
-        # Linearly mapping the patches
+        # Running linear layer tokenization
+        # Map the vector corresponding to each patch to the hidden size dimension
         tokens = self.linear_mapper(patches)
 
         # Adding classification token to the tokens
-        tokens = torch.stack([torch.vstack((self.class_token, tokens[i])) for i in range(len(tokens))])
-
+        tokens = torch.cat((self.class_token.expand(n, 1, -1), tokens), dim=1)
+        
         # Adding positional embedding
-        pos_embed = self.pos_embed.repeat(n, 1, 1)
-        output = tokens + pos_embed
+        pos_embed = self.positional_embeddings.repeat(n, 1, 1)
+        out = tokens + pos_embed
 
-        return output
+        # Transformer Blocks
+        for block in self.blocks:
+            out = block(out)
+            
+        # Getting the classification token only
+        out = out[:, 0]
+        
+        return self.mlp(out) # Map to output dimension, output category distribution
