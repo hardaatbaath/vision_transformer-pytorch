@@ -8,5 +8,7 @@ I have used the MNIST dataset for this code.
 
 ## Citation:
 Alexey Dosovitskiy, Lucas Beyer, Alexander Kolesnikov, Dirk Weissenborn, Xiaohua Zhai, Thomas Unterthiner, Mostafa Dehghani, Matthias Minderer, Georg Heigold, Sylvain Gelly, Jakob Uszkoreit, Neil Houlsby (2021). 
-*An Image is Worth 16x16 Words*. 
+<br>
+*An Image is Worth 16x16 Words*.
+<br>
 [ArXiv.](https://arxiv.org/abs/2010.11929)
